@@ -1,0 +1,21 @@
+{
+  "name": "skald",
+  "version": "1.0.0",
+  "description": "GitHub API wrapper for Vercel",
+  "scripts": {
+    "test": "node tests/runner.js",
+    "test:unit": "node tests/runner.js --skip-integration --skip-typescript",
+    "test:integration": "node tests/runner.js --skip-unit --skip-typescript",
+    "test:typescript": "node tests/runner.js --skip-unit --skip-integration",
+    "test:all": "node tests/runner.js",
+    "test:github": "node tests/integration/github.nonproduction.test.js",
+    "test:github:production": "node tests/integration/github.production.test.js"
+  },
+  "dependencies": {
+    "@vercel/node": "^3.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  }
+}

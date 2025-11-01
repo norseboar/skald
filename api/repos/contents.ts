@@ -51,6 +51,16 @@ interface GitHubCreateUpdateResponse {
     };
 }
 
+function maskSecret(value: string | undefined | null): string {
+    if (!value) {
+        return '(empty or not set)';
+    }
+    if (value.length <= 6) {
+        return '(too short to mask)';
+    }
+    return `${value.substring(0, 3)}...${value.substring(value.length - 3)}`;
+}
+
 function getAuthHeader(req: VercelRequest): string | null {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -61,10 +71,28 @@ function getAuthHeader(req: VercelRequest): string | null {
 
 function validateApiKey(req: VercelRequest): boolean {
     const apiKey = process.env.API_KEY;
+    const providedKey = getAuthHeader(req);
+
+    // Log environment variables and auth info
+    console.log('[AUTH DEBUG] Environment variables:');
+    console.log(`  API_KEY: ${maskSecret(apiKey)} (length: ${apiKey?.length || 0})`);
+    console.log(`  GITHUB_TOKEN: ${maskSecret(process.env.GITHUB_TOKEN)} (length: ${process.env.GITHUB_TOKEN?.length || 0})`);
+    console.log(`  ALLOWED_REPOS: ${process.env.ALLOWED_REPOS || '(empty or not set)'}`);
+    console.log('[AUTH DEBUG] Client auth:');
+    console.log(`  Authorization header present: ${!!req.headers.authorization}`);
+    console.log(`  Provided API key: ${maskSecret(providedKey)} (length: ${providedKey?.length || 0})`);
+    console.log(`  Keys match: ${providedKey === apiKey}`);
+    console.log(`  Server API key length: ${apiKey?.length || 0}, Client API key length: ${providedKey?.length || 0}`);
+
     if (!apiKey) {
+        console.log('[AUTH DEBUG] API_KEY environment variable is not set');
         return false;
     }
-    const providedKey = getAuthHeader(req);
+    if (!providedKey) {
+        console.log('[AUTH DEBUG] No API key provided in Authorization header');
+        return false;
+    }
+
     return providedKey === apiKey;
 }
 
@@ -115,6 +143,10 @@ export default async function handler(
     if (req.method === 'OPTIONS') {
         return res.status(200).end();
     }
+
+    // Log request info
+    console.log(`[REQUEST] ${req.method} ${req.url}`);
+    console.log(`[REQUEST] Query params: repo=${req.query.repo}, path=${req.query.path}`);
 
     // Validate API key
     if (!validateApiKey(req)) {

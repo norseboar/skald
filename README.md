@@ -101,6 +101,70 @@ curl -X PUT \
   "https://your-project.vercel.app/api/repos/owner/repo/contents?path=hello.txt"
 ```
 
+**Notes**:
+- **Recommended for**: Creating new files or replacing entire file contents
+- **Use PATCH instead**: When making partial edits to existing files (PATCH is more efficient)
+- File size is limited to 100 MB (files exceeding this limit will be rejected)
+
+### PATCH - Apply Partial Changes (Text Edits)
+
+**Endpoint**: `PATCH /api/repos/{repo}/contents?path={path}&branch={branch}`
+
+**Query Parameters**:
+- `path` (required): File path relative to repo root
+- `branch` (optional): Branch name (defaults to `main`)
+
+**Body**:
+```json
+{
+  "edits": [
+    {
+      "range": {
+        "start": { "line": 5, "character": 10 },
+        "end": { "line": 5, "character": 20 }
+      },
+      "newText": "replacement text"
+    }
+  ],
+  "message": "commit message"
+}
+```
+
+**Edit Format**: Uses LSP (Language Server Protocol) TextEdit format:
+- `range.start.line`: Starting line number (0-based)
+- `range.start.character`: Starting character position (0-based)
+- `range.end.line`: Ending line number (0-based)
+- `range.end.character`: Ending character position (0-based)
+- `newText`: Text to replace the range with (can be empty string for deletion)
+
+**Example**:
+```bash
+curl -X PATCH \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "edits": [
+      {
+        "range": {
+          "start": { "line": 0, "character": 0 },
+          "end": { "line": 0, "character": 5 }
+        },
+        "newText": "Hello"
+      }
+    ],
+    "message": "Update greeting"
+  }' \
+  "https://your-project.vercel.app/api/repos/owner/repo/contents?path=hello.txt"
+```
+
+**Notes**:
+- **Recommended for**: Making partial edits to existing files (more efficient than PUT for updates)
+- **Use PUT instead**: When creating new files or replacing entire file contents
+- Multiple edits can be provided in a single request
+- Edits are applied in reverse order (highest line number first) to preserve positions
+- File size is limited to 100 MB (files exceeding this limit will be rejected)
+- For files larger than 1 MB, the API automatically uses raw media type for efficient retrieval
+
 ### POST - Create Folder
 
 **Endpoint**: `POST /api/repos/{repo}/contents?path={path}&branch={branch}`
@@ -168,4 +232,6 @@ This will start Vercel's development server at `http://localhost:3000`.
 - The API mirrors GitHub's Content API responses closely
 - File operations automatically create parent directories if they don't exist
 - Folder creation uses `.gitkeep` files (GitHub doesn't support empty directories)
+- **File size limits**: Files are limited to 100 MB maximum (GitHub API limit)
+- **Large files**: For files larger than 1 MB, the API automatically uses GitHub's raw media type for efficient retrieval
 

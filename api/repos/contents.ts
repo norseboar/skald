@@ -51,6 +51,16 @@ interface GitHubCreateUpdateResponse {
     };
 }
 
+interface TextEditRange {
+    start: { line: number; character: number };
+    end: { line: number; character: number };
+}
+
+interface TextEdit {
+    range: TextEditRange;
+    newText: string;
+}
+
 function maskSecret(value: string | undefined | null): string {
     if (!value) {
         return '(empty or not set)';
@@ -108,18 +118,23 @@ function validateRepo(repo: string): boolean {
 async function githubApiRequest(
     method: string,
     url: string,
-    body?: any
+    body?: any,
+    useRawMediaType?: boolean
 ): Promise<Response> {
     const token = process.env.GITHUB_TOKEN;
     if (!token) {
         throw new Error('GITHUB_TOKEN not configured');
     }
 
+    const acceptHeader = useRawMediaType
+        ? 'application/vnd.github.v3.raw'
+        : 'application/vnd.github.v3+json';
+
     const options: RequestInit = {
         method,
         headers: {
             'Authorization': `Bearer ${token}`,
-            'Accept': 'application/vnd.github.v3+json',
+            'Accept': acceptHeader,
             'Content-Type': 'application/json',
         },
     };
@@ -131,13 +146,114 @@ async function githubApiRequest(
     return fetch(url, options);
 }
 
+/**
+ * Validates a TextEdit object
+ */
+function validateTextEdit(edit: any): edit is TextEdit {
+    if (!edit || typeof edit !== 'object') {
+        return false;
+    }
+    if (!edit.range || typeof edit.range !== 'object') {
+        return false;
+    }
+    if (!edit.range.start || typeof edit.range.start !== 'object' ||
+        typeof edit.range.start.line !== 'number' ||
+        typeof edit.range.start.character !== 'number') {
+        return false;
+    }
+    if (!edit.range.end || typeof edit.range.end !== 'object' ||
+        typeof edit.range.end.line !== 'number' ||
+        typeof edit.range.end.character !== 'number') {
+        return false;
+    }
+    if (typeof edit.newText !== 'string') {
+        return false;
+    }
+    // Validate range: start must be before or equal to end
+    if (edit.range.start.line > edit.range.end.line ||
+        (edit.range.start.line === edit.range.end.line &&
+            edit.range.start.character > edit.range.end.character)) {
+        return false;
+    }
+    return true;
+}
+
+/**
+ * Applies LSP TextEdit format edits to file content
+ * Edits are applied in reverse order (highest line number first) to preserve positions
+ */
+function applyTextEdits(content: string, edits: TextEdit[]): string {
+    if (edits.length === 0) {
+        return content;
+    }
+
+    const lines = content.split(/\r?\n/);
+
+    // Sort edits by position (highest line/character first) to apply in reverse order
+    const sortedEdits = [...edits].sort((a, b) => {
+        if (b.range.end.line !== a.range.end.line) {
+            return b.range.end.line - a.range.end.line;
+        }
+        return b.range.end.character - a.range.end.character;
+    });
+
+    for (const edit of sortedEdits) {
+        const { range, newText } = edit;
+
+        // Validate range bounds
+        if (range.start.line < 0 || range.end.line >= lines.length) {
+            throw new Error(`Edit range out of bounds: line ${range.start.line}-${range.end.line} (file has ${lines.length} lines)`);
+        }
+
+        // Handle single-line edits
+        if (range.start.line === range.end.line) {
+            const line = lines[range.start.line];
+            if (range.start.character < 0 || range.end.character > line.length) {
+                throw new Error(`Edit range out of bounds on line ${range.start.line}: character ${range.start.character}-${range.end.character} (line has ${line.length} characters)`);
+            }
+            const before = line.substring(0, range.start.character);
+            const after = line.substring(range.end.character);
+            lines[range.start.line] = before + newText + after;
+        } else {
+            // Handle multi-line edits
+            const firstLine = lines[range.start.line];
+            const lastLine = lines[range.end.line];
+
+            if (range.start.character < 0 || range.start.character > firstLine.length) {
+                throw new Error(`Edit range out of bounds on start line ${range.start.line}`);
+            }
+            if (range.end.character < 0 || range.end.character > lastLine.length) {
+                throw new Error(`Edit range out of bounds on end line ${range.end.line}`);
+            }
+
+            const before = firstLine.substring(0, range.start.character);
+            const after = lastLine.substring(range.end.character);
+
+            // Split newText into lines
+            const newTextLines = newText.split(/\r?\n/);
+
+            // Replace the lines
+            const replacedLines = [
+                before + (newTextLines[0] || ''),
+                ...newTextLines.slice(1),
+                after
+            ];
+
+            // Remove the old lines and insert the new ones
+            lines.splice(range.start.line, range.end.line - range.start.line + 1, ...replacedLines);
+        }
+    }
+
+    return lines.join('\n');
+}
+
 export default async function handler(
     req: VercelRequest,
     res: VercelResponse
 ) {
     // CORS headers
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, POST, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, POST, DELETE, PATCH, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
 
     if (req.method === 'OPTIONS') {
@@ -216,6 +332,16 @@ export default async function handler(
                     return res.status(400).json({ error: 'Message is required and must be a string' });
                 }
 
+                // Check file size limit (100 MB = 100 * 1024 * 1024 bytes)
+                const MAX_FILE_SIZE = 100 * 1024 * 1024;
+                const contentSize = Buffer.byteLength(content, 'utf-8');
+                if (contentSize > MAX_FILE_SIZE) {
+                    return res.status(400).json({
+                        error: `File size exceeds GitHub limit`,
+                        details: `File is ${contentSize} bytes (limit is ${MAX_FILE_SIZE} bytes / 100 MB)`
+                    });
+                }
+
                 // First, try to get the file to get its SHA (for updates)
                 let sha: string | undefined;
                 try {
@@ -232,6 +358,130 @@ export default async function handler(
 
                 // Encode content to base64
                 const encodedContent = Buffer.from(content, 'utf-8').toString('base64');
+
+                const updateBody: any = {
+                    message,
+                    content: encodedContent,
+                    branch,
+                };
+
+                if (sha) {
+                    updateBody.sha = sha;
+                }
+
+                const response = await githubApiRequest('PUT', githubUrl, updateBody);
+                const data = await response.json() as GitHubCreateUpdateResponse | any;
+
+                if (!response.ok) {
+                    return res.status(response.status).json(data);
+                }
+
+                // Decode the content in the response
+                const updateData = data as GitHubCreateUpdateResponse;
+                if (updateData.content && updateData.content.encoding === 'base64') {
+                    updateData.content.content = Buffer.from(updateData.content.content, 'base64').toString('utf-8');
+                }
+
+                return res.status(response.status).json(updateData);
+            }
+
+            case 'PATCH': {
+                const { edits, message } = req.body;
+
+                if (!edits || !Array.isArray(edits) || edits.length === 0) {
+                    return res.status(400).json({ error: 'Edits array is required and must contain at least one edit' });
+                }
+                if (!message || typeof message !== 'string') {
+                    return res.status(400).json({ error: 'Message is required and must be a string' });
+                }
+
+                // Validate all edits
+                for (let i = 0; i < edits.length; i++) {
+                    if (!validateTextEdit(edits[i])) {
+                        return res.status(400).json({
+                            error: `Invalid edit at index ${i}. Each edit must have a range with start/end (line, character) and newText (string)`
+                        });
+                    }
+                }
+
+                // Get the current file content
+                let sha: string | undefined;
+                let currentContent: string = '';
+                let fileSize: number = 0;
+
+                try {
+                    // First check file size to determine if we need raw media type
+                    const getResponse = await githubApiRequest('GET', `${githubUrl}?ref=${branch}`);
+                    if (!getResponse.ok) {
+                        return res.status(getResponse.status).json({
+                            error: 'File not found',
+                            details: await getResponse.json().catch(() => ({}))
+                        });
+                    }
+
+                    const existingFile = await getResponse.json() as GitHubContentResponse | any;
+
+                    // Check if it's a directory
+                    if (Array.isArray(existingFile)) {
+                        return res.status(400).json({ error: 'Cannot apply edits to a directory' });
+                    }
+
+                    fileSize = existingFile.size || 0;
+                    sha = existingFile.sha;
+
+                    // Use raw media type for files > 1 MB
+                    const useRawMediaType = fileSize > 1024 * 1024; // 1 MB
+
+                    const contentResponse = await githubApiRequest('GET', `${githubUrl}?ref=${branch}`, undefined, useRawMediaType);
+                    if (!contentResponse.ok) {
+                        return res.status(contentResponse.status).json({
+                            error: 'Failed to retrieve file content',
+                            details: await contentResponse.json().catch(() => ({}))
+                        });
+                    }
+
+                    if (useRawMediaType) {
+                        // Raw content is plain text
+                        currentContent = await contentResponse.text();
+                    } else {
+                        // Regular API response has base64 encoded content
+                        const fileData = await contentResponse.json() as GitHubContentResponse;
+                        if (fileData.encoding === 'base64' && fileData.content) {
+                            currentContent = Buffer.from(fileData.content, 'base64').toString('utf-8');
+                        } else {
+                            currentContent = fileData.content || '';
+                        }
+                    }
+                } catch (e: any) {
+                    return res.status(500).json({
+                        error: 'Failed to retrieve file content',
+                        message: e.message
+                    });
+                }
+
+                // Apply edits
+                let updatedContent: string;
+                try {
+                    updatedContent = applyTextEdits(currentContent, edits as TextEdit[]);
+                } catch (e: any) {
+                    return res.status(400).json({
+                        error: 'Failed to apply edits',
+                        message: e.message
+                    });
+                }
+
+                // Check file size limit (100 MB = 100 * 1024 * 1024 bytes)
+                const MAX_FILE_SIZE = 100 * 1024 * 1024;
+                const updatedContentSize = Buffer.byteLength(updatedContent, 'utf-8');
+                if (updatedContentSize > MAX_FILE_SIZE) {
+                    return res.status(400).json({
+                        error: `File size exceeds GitHub limit`,
+                        details: `File would be ${updatedContentSize} bytes (limit is ${MAX_FILE_SIZE} bytes / 100 MB)`
+                    });
+                }
+
+                // Encode updated content to base64
+                const encodedContent = Buffer.from(updatedContent, 'utf-8').toString('base64');
 
                 const updateBody: any = {
                     message,

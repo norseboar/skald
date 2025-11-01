@@ -88,6 +88,9 @@ async function runIntegrationTests() {
     console.log('\n🚀 Running integration tests...\n');
     const runner = new TestRunner();
 
+    // Increase max listeners to prevent warnings when multiple test files run
+    process.setMaxListeners(20);
+
     // Check if .env.local exists
     const envPath = path.join(__dirname, '..', '..', '.env.local');
     if (!fs.existsSync(envPath)) {
@@ -226,10 +229,13 @@ async function runIntegrationTests() {
     }
 
     // Handle Ctrl+C gracefully
-    process.on('SIGINT', async () => {
+    // Remove any existing SIGINT listeners to prevent accumulation
+    const sigintHandler = async () => {
         await shutdownServer();
         process.exit(1);
-    });
+    };
+    process.removeAllListeners('SIGINT');
+    process.on('SIGINT', sigintHandler);
 
     serverProcess.stdout.on('data', (data) => {
         const output = data.toString();
@@ -504,6 +510,8 @@ async function runIntegrationTests() {
     } finally {
         // Cleanup: kill server process
         clearTimeout(startupTimeout);
+        // Remove SIGINT handler to prevent listener accumulation
+        process.removeListener('SIGINT', sigintHandler);
         console.log('\n  Stopping server...');
         await shutdownServer();
         console.log('  Server stopped.\n');

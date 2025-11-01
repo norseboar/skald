@@ -48,18 +48,18 @@ function sleep(ms) {
 function makeRequest(target, requestPath, method = 'GET', headers = {}, data = null, debug = false) {
     return new Promise((resolve, reject) => {
         const timeout = 30000;
-        
+
         let requestModule;
         let reqOptions;
         let fullUrl;
-        
+
         // Determine if target is a URL string or localhost config
         if (typeof target === 'string') {
             // URL-based request (production)
             fullUrl = `${target}${requestPath}`;
             const parsedUrl = new URL(fullUrl);
             requestModule = parsedUrl.protocol === 'https:' ? https : http;
-            
+
             reqOptions = {
                 hostname: parsedUrl.hostname,
                 port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
@@ -79,7 +79,7 @@ function makeRequest(target, requestPath, method = 'GET', headers = {}, data = n
                 headers: headers
             };
         }
-        
+
         // Prepare body data if provided
         let bodyData = null;
         if (data) {
@@ -111,7 +111,7 @@ function makeRequest(target, requestPath, method = 'GET', headers = {}, data = n
                 console.log(`    [DEBUG] Response status: ${res.statusCode}`);
                 console.log(`    [DEBUG] Response headers: ${JSON.stringify(res.headers, null, 2)}`);
             }
-            
+
             let body = '';
             res.on('data', chunk => body += chunk);
             res.on('end', () => {
@@ -138,7 +138,7 @@ function makeRequest(target, requestPath, method = 'GET', headers = {}, data = n
             }
             reject(error);
         });
-        
+
         req.setTimeout(timeout, () => {
             if (debug || typeof target === 'string') {
                 console.log(`    [DEBUG] Request timeout after ${timeout}ms`);
@@ -164,7 +164,7 @@ function makeRequest(target, requestPath, method = 'GET', headers = {}, data = n
  */
 async function runGitHubTests(target, testRepo, apiKey, runner) {
     const createdFiles = []; // Track files/folders to clean up
-    
+
     // Generate unique test file name
     const timestamp = Date.now();
     const testFileName = `test-${timestamp}.txt`;
@@ -301,6 +301,131 @@ async function runGitHubTests(target, testRepo, apiKey, runner) {
     } catch (e) {
         console.log(`    Error: ${e.message}`);
         runner.test('PUT update succeeds', false, e.message);
+    }
+
+    // Test 5: PATCH - Apply partial edits to a file
+    console.log('\n  [TEST 5] PATCH - Apply text edits');
+    try {
+        // First, create a file with known content for testing edits
+        const patchTestFileName = `test-patch-${timestamp}.txt`;
+        const patchTestFilePath = `test-files/${patchTestFileName}`;
+        const initialContent = 'Line 1: Hello\nLine 2: World\nLine 3: Test\nLine 4: Content';
+
+        // Create the file
+        const createResponse = await makeRequest(
+            target,
+            `/api/repos/contents?repo=${encodeURIComponent(testRepo)}&path=${encodeURIComponent(patchTestFilePath)}`,
+            'PUT',
+            {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json'
+            },
+            {
+                content: initialContent,
+                message: `Test: Create file for PATCH test ${patchTestFileName}`
+            }
+        );
+
+        if (createResponse.status === 200 || createResponse.status === 201) {
+            await sleep(1000); // Give GitHub a moment to process
+
+            // Apply a PATCH edit: replace "World" with "Universe"
+            const patchResponse = await makeRequest(
+                target,
+                `/api/repos/contents?repo=${encodeURIComponent(testRepo)}&path=${encodeURIComponent(patchTestFilePath)}`,
+                'PATCH',
+                {
+                    'Authorization': `Bearer ${apiKey}`,
+                    'Content-Type': 'application/json'
+                },
+                {
+                    edits: [
+                        {
+                            range: {
+                                start: { line: 1, character: 7 },
+                                end: { line: 1, character: 12 }
+                            },
+                            newText: 'Universe'
+                        }
+                    ],
+                    message: `Test: Apply PATCH edit to ${patchTestFileName}`
+                }
+            );
+
+            console.log(`    Status: ${patchResponse.status}`);
+            runner.test('PATCH applies edits successfully', patchResponse.status === 200, `Got status ${patchResponse.status}`);
+
+            if (patchResponse.status === 200) {
+                // Verify the edit was applied correctly
+                await sleep(1000);
+                const verifyResponse = await makeRequest(
+                    target,
+                    `/api/repos/contents?repo=${encodeURIComponent(testRepo)}&path=${encodeURIComponent(patchTestFilePath)}`,
+                    'GET',
+                    {
+                        'Authorization': `Bearer ${apiKey}`
+                    }
+                );
+
+                if (verifyResponse.status === 200) {
+                    const content = verifyResponse.body?.content || verifyResponse.body;
+                    const hasUniverse = typeof content === 'string' && content.includes('Universe');
+                    const hasOriginalWorld = typeof content === 'string' && content.includes('World');
+                    runner.test('PATCH edit applied correctly', hasUniverse && !hasOriginalWorld,
+                        hasUniverse ? 'Edit verified' : 'Content verification failed');
+                }
+
+                // Track file for cleanup
+                createdFiles.push({
+                    path: patchTestFilePath,
+                    sha: patchResponse.body?.content?.sha || createResponse.body?.content?.sha
+                });
+            } else {
+                console.log(`    Error response: ${JSON.stringify(patchResponse.body).substring(0, 300)}`);
+            }
+        } else {
+            runner.test('PATCH test setup succeeds', false, `Failed to create test file: ${createResponse.status}`);
+        }
+    } catch (e) {
+        console.log(`    Error: ${e.message}`);
+        runner.test('PATCH request succeeds', false, e.message);
+    }
+
+    // Test 6: PATCH - Test invalid edit (out of bounds)
+    console.log('\n  [TEST 6] PATCH - Test invalid edit validation');
+    try {
+        if (createdFiles.length > 0) {
+            const invalidPatchResponse = await makeRequest(
+                target,
+                `/api/repos/contents?repo=${encodeURIComponent(testRepo)}&path=${encodeURIComponent(testFilePath)}`,
+                'PATCH',
+                {
+                    'Authorization': `Bearer ${apiKey}`,
+                    'Content-Type': 'application/json'
+                },
+                {
+                    edits: [
+                        {
+                            range: {
+                                start: { line: 9999, character: 0 },
+                                end: { line: 10000, character: 0 }
+                            },
+                            newText: 'This should fail'
+                        }
+                    ],
+                    message: `Test: Invalid edit range`
+                }
+            );
+
+            console.log(`    Status: ${invalidPatchResponse.status}`);
+            runner.test('PATCH rejects invalid edit range', invalidPatchResponse.status === 400,
+                `Got status ${invalidPatchResponse.status}, expected 400`);
+        } else {
+            runner.test('PATCH invalid edit test', false, 'No test file available');
+        }
+    } catch (e) {
+        console.log(`    Error: ${e.message}`);
+        runner.test('PATCH invalid edit test', false, e.message);
     }
 
     return createdFiles;

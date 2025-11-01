@@ -1,7 +1,10 @@
+# NOTE: OpenAPI operation descriptions must be <= 300 characters for OpenAI Custom GPT compatibility
+# Check all operation descriptions when adding new endpoints or updating existing ones
+
 openapi: 3.1.0
 info:
   title: Skald GitHub API Wrapper
-  description: API wrapper for GitHub Content API operations - allows listing directories, getting file contents, creating/updating files, creating folders, and deleting files
+  description: API wrapper for GitHub Content API operations - allows listing directories, getting file contents, creating/updating files, applying partial edits, creating folders, and deleting files
   version: 1.0.0
 servers:
   - url: https://skald-mu.vercel.app
@@ -10,7 +13,7 @@ paths:
   /api/repos/contents:
     get:
       summary: List directory or get file contents
-      description: Retrieves either a directory listing or the contents of a specific file from a GitHub repository
+      description: Retrieves either a directory listing (array) or the contents of a specific file from a GitHub repository. File content is automatically decoded from base64.
       operationId: getContents
       x-openai-isUserConfirmationRequired: false
       parameters:
@@ -20,6 +23,7 @@ paths:
           description: Repository in format owner/repo (e.g., username/repo-name)
           schema:
             type: string
+            pattern: '^[^/]+/[^/]+$'
         - name: path
           in: query
           required: true
@@ -43,92 +47,37 @@ paths:
               schema:
                 oneOf:
                   - type: array
+                    description: Directory listing (array of items)
                     items:
-                      type: object
-                      properties:
-                        name:
-                          type: string
-                        path:
-                          type: string
-                        sha:
-                          type: string
-                        size:
-                          type: integer
-                        type:
-                          type: string
-                          enum: [file, dir]
-                        url:
-                          type: string
-                        html_url:
-                          type: string
-                        git_url:
-                          type: string
-                        download_url:
-                          type: string
-                          nullable: true
-                  - type: object
-                    properties:
-                      name:
-                        type: string
-                      path:
-                        type: string
-                      sha:
-                        type: string
-                      size:
-                        type: integer
-                      content:
-                        type: string
-                        description: File contents as plain text (decoded from base64)
-                      encoding:
-                        type: string
-                      url:
-                        type: string
-                      html_url:
-                        type: string
-                      git_url:
-                        type: string
-                      download_url:
-                        type: string
-                        nullable: true
+                      $ref: '#/components/schemas/GitHubContentItem'
+                  - $ref: '#/components/schemas/GitHubFileContent'
         '400':
           description: Bad request - missing or invalid parameters
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: string
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - invalid or missing API key
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: string
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden - repository not in allowed list
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: string
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: File or directory not found
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: string
+                $ref: '#/components/schemas/ErrorResponse'
     put:
       summary: Create new file or replace entire file content
-      description: Creates a new file or replaces the entire contents of an existing file in a GitHub repository. **Recommended for creating new files.** For updating existing files with partial changes, use the PATCH endpoint instead (more efficient). The API automatically handles SHA for updates. File size is limited to 100 MB (files exceeding this limit will be rejected).
+      description: "Creates a new file or replaces entire contents of an existing file. Recommended for creating new files. Handles SHA automatically. File size limit: 100 MB."
       operationId: createOrUpdateFile
       x-openai-isUserConfirmationRequired: false
       parameters:
@@ -138,6 +87,7 @@ paths:
           description: Repository in format owner/repo (e.g., username/repo-name)
           schema:
             type: string
+            pattern: '^[^/]+/[^/]+$'
         - name: path
           in: query
           required: true
@@ -175,82 +125,40 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  content:
-                    type: object
-                    properties:
-                      name:
-                        type: string
-                      path:
-                        type: string
-                      sha:
-                        type: string
-                      size:
-                        type: integer
-                      content:
-                        type: string
-                        description: File contents as plain text (decoded from base64)
-                      encoding:
-                        type: string
-                      url:
-                        type: string
-                      html_url:
-                        type: string
-                      git_url:
-                        type: string
-                      download_url:
-                        type: string
-                        nullable: true
-                  commit:
-                    type: object
-                    properties:
-                      sha:
-                        type: string
-                      message:
-                        type: string
-                      author:
-                        type: object
-                        properties:
-                          name:
-                            type: string
-                          email:
-                            type: string
-                          date:
-                            type: string
+                $ref: '#/components/schemas/GitHubCreateUpdateResponse'
+        '201':
+          description: Success - file created or updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GitHubCreateUpdateResponse'
         '400':
           description: Bad request - missing or invalid parameters, or file size exceeds 100 MB limit
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                  details:
-                    type: string
-                    description: Additional error details (e.g., file size information)
+                allOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - type: object
+                    properties:
+                      details:
+                        type: string
+                        description: Additional error details (e.g., file size information)
         '401':
           description: Unauthorized - invalid or missing API key
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: string
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden - repository not in allowed list
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: string
+                $ref: '#/components/schemas/ErrorResponse'
     patch:
       summary: Apply partial changes using text edits
-      description: Applies partial changes to an existing file using LSP (Language Server Protocol) TextEdit format. **Recommended for updating existing files.** Retrieves the current file, applies the edits, and commits the changes. For creating new files, use the PUT endpoint instead. File size is limited to 100 MB (files exceeding this limit will be rejected). For files larger than 1 MB, the API automatically uses GitHub's raw media type for efficient retrieval.
+      description: "Applies partial changes to an existing file using LSP TextEdit format. Recommended for updating existing files. Use PUT for creating new files. Retrieves file, applies edits, commits. File size limit: 100 MB. Uses raw media type for files > 1 MB."
       operationId: applyTextEdits
       x-openai-isUserConfirmationRequired: false
       parameters:
@@ -260,6 +168,7 @@ paths:
           description: Repository in format owner/repo (e.g., username/repo-name)
           schema:
             type: string
+            pattern: '^[^/]+/[^/]+$'
         - name: path
           in: query
           required: true
@@ -290,48 +199,7 @@ paths:
                   description: Array of text edits to apply (LSP TextEdit format)
                   minItems: 1
                   items:
-                    type: object
-                    required:
-                      - range
-                      - newText
-                    properties:
-                      range:
-                        type: object
-                        required:
-                          - start
-                          - end
-                        properties:
-                          start:
-                            type: object
-                            required:
-                              - line
-                              - character
-                            properties:
-                              line:
-                                type: integer
-                                minimum: 0
-                                description: Starting line number (0-based)
-                              character:
-                                type: integer
-                                minimum: 0
-                                description: Starting character position (0-based)
-                          end:
-                            type: object
-                            required:
-                              - line
-                              - character
-                            properties:
-                              line:
-                                type: integer
-                                minimum: 0
-                                description: Ending line number (0-based)
-                              character:
-                                type: integer
-                                minimum: 0
-                                description: Ending character position (0-based)
-                      newText:
-                        type: string
-                        description: Text to replace the range with (can be empty string for deletion)
+                    $ref: '#/components/schemas/TextEdit'
                 message:
                   type: string
                   description: Commit message describing the changes
@@ -341,105 +209,58 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  content:
-                    type: object
-                    properties:
-                      name:
-                        type: string
-                      path:
-                        type: string
-                      sha:
-                        type: string
-                      size:
-                        type: integer
-                      content:
-                        type: string
-                        description: File contents as plain text (decoded from base64)
-                      encoding:
-                        type: string
-                      url:
-                        type: string
-                      html_url:
-                        type: string
-                      git_url:
-                        type: string
-                      download_url:
-                        type: string
-                        nullable: true
-                  commit:
-                    type: object
-                    properties:
-                      sha:
-                        type: string
-                      message:
-                        type: string
-                      author:
-                        type: object
-                        properties:
-                          name:
-                            type: string
-                          email:
-                            type: string
-                          date:
-                            type: string
+                $ref: '#/components/schemas/GitHubCreateUpdateResponse'
         '400':
           description: Bad request - missing or invalid parameters, invalid edits, file size exceeds 100 MB limit, or edits reference out-of-bounds ranges
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                  details:
-                    type: string
-                    description: Additional error details (e.g., file size information or edit validation errors)
-                  message:
-                    type: string
-                    description: Detailed error message
+                allOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - type: object
+                    properties:
+                      details:
+                        type: string
+                        description: Additional error details (e.g., file size information or edit validation errors)
+                      message:
+                        type: string
+                        description: Detailed error message
         '401':
           description: Unauthorized - invalid or missing API key
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: string
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden - repository not in allowed list
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: string
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: File not found
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                  details:
-                    type: object
-                    description: Additional error details from GitHub API
+                allOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - type: object
+                    properties:
+                      details:
+                        type: object
+                        description: Additional error details from GitHub API
         '500':
           description: Internal server error - failed to retrieve or process file content
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                  message:
-                    type: string
+                allOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - type: object
+                    properties:
+                      message:
+                        type: string
+                        description: Detailed error message
     post:
       summary: Create folder
       description: Creates a new folder in a GitHub repository by creating a .gitkeep file (GitHub doesn't support empty directories)
@@ -452,6 +273,7 @@ paths:
           description: Repository in format owner/repo (e.g., username/repo-name)
           schema:
             type: string
+            pattern: '^[^/]+/[^/]+$'
         - name: path
           in: query
           required: true
@@ -485,47 +307,49 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  path:
-                    type: string
-                    description: Path of the created folder
-                  message:
-                    type: string
-                    description: Confirmation message
-                  content:
-                    type: object
-                    description: Information about the created .gitkeep file
-                  commit:
-                    type: object
-                    description: Commit information
+                allOf:
+                  - $ref: '#/components/schemas/GitHubCreateUpdateResponse'
+                  - type: object
+                    properties:
+                      path:
+                        type: string
+                        description: Path of the created folder
+                      message:
+                        type: string
+                        description: Confirmation message
+        '201':
+          description: Success - folder created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/GitHubCreateUpdateResponse'
+                  - type: object
+                    properties:
+                      path:
+                        type: string
+                        description: Path of the created folder
+                      message:
+                        type: string
+                        description: Confirmation message
         '400':
           description: Bad request - missing or invalid parameters
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: string
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - invalid or missing API key
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: string
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden - repository not in allowed list
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: string
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       summary: Delete file
       description: Deletes a file from a GitHub repository. Requires the file SHA obtained from a GET request.
@@ -538,6 +362,7 @@ paths:
           description: Repository in format owner/repo (e.g., username/repo-name)
           schema:
             type: string
+            pattern: '^[^/]+/[^/]+$'
         - name: path
           in: query
           required: true
@@ -578,48 +403,224 @@ paths:
                 type: object
                 properties:
                   commit:
+                    $ref: '#/components/schemas/GitHubCommit'
+                  content:
                     type: object
-                    description: Commit information for the deletion
+                    nullable: true
+                    description: May be null on successful deletion
         '400':
           description: Bad request - missing or invalid parameters
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: string
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - invalid or missing API key
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: string
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden - repository not in allowed list
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: string
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: File not found
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-securitySchemes:
-  BearerAuth:
-    type: http
-    scheme: bearer
-    bearerFormat: JWT
-    description: API key passed as Bearer token in Authorization header
-
+                $ref: '#/components/schemas/ErrorResponse'
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: API key passed as Bearer token in Authorization header
+  schemas:
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Error message
+        details:
+          type: string
+          description: Additional error details (optional)
+        message:
+          type: string
+          description: Detailed error message (optional)
+    GitHubContentItem:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Name of the file or directory
+        path:
+          type: string
+          description: Path relative to repository root
+        sha:
+          type: string
+          description: Git blob SHA
+        size:
+          type: integer
+          description: File size in bytes
+        url:
+          type: string
+          format: uri
+          description: GitHub API URL
+        html_url:
+          type: string
+          format: uri
+          description: GitHub web URL
+        git_url:
+          type: string
+          format: uri
+          description: Git URL
+        download_url:
+          type: string
+          format: uri
+          nullable: true
+          description: Direct download URL (null for directories)
+        type:
+          type: string
+          enum:
+            - file
+            - dir
+          description: Type of item (file or directory)
+    GitHubFileContent:
+      type: object
+      properties:
+        content:
+          type: string
+          description: File contents as plain text (decoded from base64)
+        encoding:
+          type: string
+          description: Content encoding (typically 'base64' before decoding)
+        sha:
+          type: string
+          description: Git blob SHA
+        size:
+          type: integer
+          description: File size in bytes
+        url:
+          type: string
+          format: uri
+          description: GitHub API URL
+        html_url:
+          type: string
+          format: uri
+          description: GitHub web URL
+        git_url:
+          type: string
+          format: uri
+          description: Git URL
+        download_url:
+          type: string
+          format: uri
+          nullable: true
+          description: Direct download URL
+    GitHubCreateUpdateResponse:
+      type: object
+      properties:
+        content:
+          $ref: '#/components/schemas/GitHubFileContent'
+        commit:
+          $ref: '#/components/schemas/GitHubCommit'
+    GitHubCommit:
+      type: object
+      properties:
+        sha:
+          type: string
+          description: Commit SHA
+        node_id:
+          type: string
+          description: GitHub node ID
+        url:
+          type: string
+          format: uri
+          description: GitHub API URL
+        html_url:
+          type: string
+          format: uri
+          description: GitHub web URL
+        author:
+          $ref: '#/components/schemas/GitHubCommitAuthor'
+        committer:
+          $ref: '#/components/schemas/GitHubCommitAuthor'
+        message:
+          type: string
+          description: Commit message
+        tree:
+          type: object
+          properties:
+            sha:
+              type: string
+            url:
+              type: string
+              format: uri
+        parents:
+          type: array
+          items:
+            type: object
+            properties:
+              sha:
+                type: string
+              url:
+                type: string
+                format: uri
+              html_url:
+                type: string
+                format: uri
+    GitHubCommitAuthor:
+      type: object
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+        date:
+          type: string
+          format: date-time
+    TextEdit:
+      type: object
+      required:
+        - range
+        - newText
+      description: LSP TextEdit format for partial file edits
+      properties:
+        range:
+          $ref: '#/components/schemas/TextEditRange'
+        newText:
+          type: string
+          description: Text to replace the range with (can be empty string for deletion)
+    TextEditRange:
+      type: object
+      required:
+        - start
+        - end
+      description: Range of text to edit (0-based line and character positions)
+      properties:
+        start:
+          $ref: '#/components/schemas/TextPosition'
+        end:
+          $ref: '#/components/schemas/TextPosition'
+    TextPosition:
+      type: object
+      required:
+        - line
+        - character
+      description: Text position (0-based)
+      properties:
+        line:
+          type: integer
+          minimum: 0
+          description: Line number (0-based, first line is 0)
+        character:
+          type: integer
+          minimum: 0
+          description: Character position within the line (0-based)

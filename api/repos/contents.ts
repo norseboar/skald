@@ -23,6 +23,7 @@ interface GitHubContentResponse {
     html_url: string;
     git_url: string;
     download_url: string | null;
+    lineCount?: number; // Added for Option A
 }
 
 interface GitHubCreateUpdateResponse {
@@ -200,16 +201,25 @@ function applyTextEdits(content: string, edits: TextEdit[]): string {
     for (const edit of sortedEdits) {
         const { range, newText } = edit;
 
-        // Validate range bounds
-        if (range.start.line < 0 || range.end.line >= lines.length) {
-            throw new Error(`Edit range out of bounds: line ${range.start.line}-${range.end.line} (file has ${lines.length} lines)`);
+        // Validate range bounds (enhanced error messages - Option D)
+        if (range.start.line < 0) {
+            throw new Error(`Edit range out of bounds: start line ${range.start.line} is negative (file has ${lines.length} lines, 0-based indexing)`);
+        }
+        if (range.end.line >= lines.length) {
+            throw new Error(`Edit range out of bounds: end line ${range.end.line} exceeds file length (file has ${lines.length} lines, 0-based indexing, max valid line is ${lines.length - 1})`);
+        }
+        if (range.start.line > range.end.line) {
+            throw new Error(`Edit range invalid: start line ${range.start.line} is greater than end line ${range.end.line}`);
         }
 
         // Handle single-line edits
         if (range.start.line === range.end.line) {
             const line = lines[range.start.line];
-            if (range.start.character < 0 || range.end.character > line.length) {
-                throw new Error(`Edit range out of bounds on line ${range.start.line}: character ${range.start.character}-${range.end.character} (line has ${line.length} characters)`);
+            if (range.start.character < 0) {
+                throw new Error(`Edit range out of bounds on line ${range.start.line}: start character ${range.start.character} is negative (line has ${line.length} characters, 0-based indexing)`);
+            }
+            if (range.end.character > line.length) {
+                throw new Error(`Edit range out of bounds on line ${range.start.line}: end character ${range.end.character} exceeds line length (line has ${line.length} characters, 0-based indexing, max valid character is ${line.length})`);
             }
             const before = line.substring(0, range.start.character);
             const after = line.substring(range.end.character);
@@ -220,10 +230,10 @@ function applyTextEdits(content: string, edits: TextEdit[]): string {
             const lastLine = lines[range.end.line];
 
             if (range.start.character < 0 || range.start.character > firstLine.length) {
-                throw new Error(`Edit range out of bounds on start line ${range.start.line}`);
+                throw new Error(`Edit range out of bounds on start line ${range.start.line}: character ${range.start.character} (line has ${firstLine.length} characters, 0-based indexing, max valid character is ${firstLine.length})`);
             }
             if (range.end.character < 0 || range.end.character > lastLine.length) {
-                throw new Error(`Edit range out of bounds on end line ${range.end.line}`);
+                throw new Error(`Edit range out of bounds on end line ${range.end.line}: character ${range.end.character} (line has ${lastLine.length} characters, 0-based indexing, max valid character is ${lastLine.length})`);
             }
 
             const before = firstLine.substring(0, range.start.character);
@@ -297,6 +307,9 @@ export default async function handler(
     try {
         switch (req.method) {
             case 'GET': {
+                // Check if this is a search request (Option B)
+                const searchPattern = req.query.search as string | undefined;
+
                 const response = await githubApiRequest('GET', `${githubUrl}?ref=${branch}`);
                 const data = await response.json() as GitHubContentItem[] | GitHubContentResponse | any;
 
@@ -311,15 +324,62 @@ export default async function handler(
 
                 // Otherwise it's a file - decode base64 content
                 const fileData = data as GitHubContentResponse;
+                let decodedContent: string = '';
+
                 if (fileData.encoding === 'base64' && fileData.content) {
-                    const decodedContent = Buffer.from(fileData.content, 'base64').toString('utf-8');
+                    decodedContent = Buffer.from(fileData.content, 'base64').toString('utf-8');
+                } else if (fileData.content && typeof fileData.content === 'string') {
+                    decodedContent = fileData.content;
+                } else {
+                    return res.status(200).json(data);
+                }
+
+                // Calculate line count (Option A)
+                const lines = decodedContent.split(/\r?\n/);
+                const lineCount = lines.length;
+
+                // If search pattern provided, find matches (Option B)
+                if (searchPattern) {
+                    const matches: Array<{ line: number; character: number; text: string }> = [];
+
+                    for (let i = 0; i < lines.length; i++) {
+                        const line = lines[i];
+                        let startIndex = 0;
+
+                        // Find all occurrences of the pattern in this line
+                        while (true) {
+                            const index = line.indexOf(searchPattern, startIndex);
+                            if (index === -1) break;
+
+                            matches.push({
+                                line: i,
+                                character: index,
+                                text: line.substring(Math.max(0, index - 20), Math.min(line.length, index + searchPattern.length + 20))
+                            });
+
+                            startIndex = index + 1;
+                        }
+                    }
+
                     return res.status(200).json({
-                        ...fileData,
-                        content: decodedContent,
+                        pattern: searchPattern,
+                        matches: matches,
+                        totalMatches: matches.length,
+                        lineCount: lineCount,
+                        fileInfo: {
+                            path: path,
+                            sha: fileData.sha,
+                            size: fileData.size
+                        }
                     });
                 }
 
-                return res.status(200).json(data);
+                // Regular GET response with line count
+                return res.status(200).json({
+                    ...fileData,
+                    content: decodedContent,
+                    lineCount: lineCount,
+                });
             }
 
             case 'PUT': {
@@ -459,14 +519,62 @@ export default async function handler(
                     });
                 }
 
+                // Calculate line count for better error messages (Option D)
+                const lines = currentContent.split(/\r?\n/);
+                const actualLineCount = lines.length;
+
                 // Apply edits
                 let updatedContent: string;
                 try {
                     updatedContent = applyTextEdits(currentContent, edits as TextEdit[]);
                 } catch (e: any) {
+                    // Enhanced error message with file stats (Option D)
+                    const errorMessage = e.message;
+
+                    // Try multiple patterns to extract line numbers
+                    const rangeMatch = errorMessage.match(/line (\d+)-(\d+)/) ||
+                        errorMessage.match(/line (\d+)/) ||
+                        errorMessage.match(/start line (\d+)/) ||
+                        errorMessage.match(/end line (\d+)/);
+
+                    let suggestion = `File has ${actualLineCount} lines (0-based indexing, so max valid line is ${actualLineCount - 1}). `;
+
+                    if (rangeMatch) {
+                        const requestedStart = parseInt(rangeMatch[1]);
+                        const requestedEnd = rangeMatch[2] ? parseInt(rangeMatch[2]) : requestedStart;
+
+                        if (requestedStart >= actualLineCount) {
+                            suggestion += `Requested line ${requestedStart} is out of bounds. `;
+                        } else if (requestedEnd >= actualLineCount) {
+                            suggestion += `Requested end line ${requestedEnd} is out of bounds. `;
+                        }
+                        suggestion += 'Check that you calculated line numbers from the complete file content, not truncated content.';
+
+                        return res.status(400).json({
+                            error: 'Failed to apply edits',
+                            message: errorMessage,
+                            details: {
+                                actualFileLineCount: actualLineCount,
+                                requestedRange: `${requestedStart}-${requestedEnd}`,
+                                fileSize: fileSize,
+                                filePath: path,
+                                suggestion: suggestion
+                            }
+                        });
+                    }
+
+                    // Fallback for errors without parseable line numbers
+                    suggestion += 'Check that you calculated line numbers from the complete file content, not truncated content.';
+
                     return res.status(400).json({
                         error: 'Failed to apply edits',
-                        message: e.message
+                        message: errorMessage,
+                        details: {
+                            actualFileLineCount: actualLineCount,
+                            fileSize: fileSize,
+                            filePath: path,
+                            suggestion: suggestion
+                        }
                     });
                 }
 

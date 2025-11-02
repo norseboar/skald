@@ -4,7 +4,7 @@
 openapi: 3.1.0
 info:
   title: Skald GitHub API Wrapper
-  description: API wrapper for GitHub Content API - list directories, get file contents with lineCount, search text patterns, create/update files, apply partial edits with enhanced errors, create folders, delete files
+  description: API wrapper for GitHub Content API operations - allows listing directories, getting file contents, creating/updating files, applying partial edits, creating folders, and deleting files
   version: 1.0.0
 servers:
   - url: https://skald-mu.vercel.app
@@ -12,8 +12,8 @@ servers:
 paths:
   /api/repos/contents:
     get:
-      summary: List directory, get file contents, or search for text patterns
-      description: Retrieves either a directory listing (array) or the contents of a specific file from a GitHub repository. File content is automatically decoded from base64. If search parameter is provided, returns line numbers and positions of matches instead of full content. Response includes lineCount metadata.
+      summary: List directory or get file contents
+      description: Retrieves either a directory listing (array) or the contents of a specific file from a GitHub repository. File content is automatically decoded from base64.
       operationId: getContents
       x-openai-isUserConfirmationRequired: false
       parameters:
@@ -37,27 +37,20 @@ paths:
           schema:
             type: string
             default: main
-        - name: search
-          in: query
-          required: false
-          description: Optional search pattern to find line numbers and character positions. Returns matches instead of full content.
-          schema:
-            type: string
       security:
         - BearerAuth: []
       responses:
         '200':
-          description: Success - returns directory listing (array), file content with lineCount (object), or search results (when search parameter provided)
+          description: Success - returns directory listing array or file content object
           content:
             application/json:
               schema:
                 oneOf:
                   - type: array
-                    description: Directory listing - returned when path is a directory
+                    description: Directory listing (array of items)
                     items:
                       $ref: '#/components/schemas/GitHubContentItem'
                   - $ref: '#/components/schemas/GitHubFileContent'
-                  - $ref: '#/components/schemas/SearchResult'
         '400':
           description: Bad request - missing or invalid parameters
           content:
@@ -165,7 +158,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     patch:
       summary: Apply partial changes using text edits
-      description: "Applies partial changes to an existing file using LSP TextEdit format. Recommended for updating existing files. Use PUT for creating new files. Retrieves file, applies edits, commits. Returns enhanced error messages with lineCount and suggestions if edits fail. File size limit: 100 MB."
+      description: "Applies partial changes to an existing file using LSP TextEdit format. Recommended for updating existing files. Use PUT for creating new files. Retrieves file, applies edits, commits. File size limit: 100 MB. Uses raw media type for files > 1 MB."
       operationId: applyTextEdits
       x-openai-isUserConfirmationRequired: false
       parameters:
@@ -227,26 +220,7 @@ paths:
                   - type: object
                     properties:
                       details:
-                        oneOf:
-                          - type: string
-                          - type: object
-                            description: Enhanced error details for out-of-bounds edits
-                            properties:
-                              actualFileLineCount:
-                                type: integer
-                                description: Actual number of lines in the file
-                              requestedRange:
-                                type: string
-                                description: The requested line range that was out of bounds
-                              fileSize:
-                                type: integer
-                                description: File size in bytes
-                              filePath:
-                                type: string
-                                description: Path to the file
-                              suggestion:
-                                type: string
-                                description: Helpful suggestion for fixing the error
+                        type: string
                         description: Additional error details (e.g., file size information or edit validation errors)
                       message:
                         type: string
@@ -523,7 +497,7 @@ components:
       properties:
         content:
           type: string
-          description: File contents as plain text (decoded from base64). Not included when search parameter is used.
+          description: File contents as plain text (decoded from base64)
         encoding:
           type: string
           description: Content encoding (typically 'base64' before decoding)
@@ -533,9 +507,6 @@ components:
         size:
           type: integer
           description: File size in bytes
-        lineCount:
-          type: integer
-          description: Total number of lines in the file (0-based indexing means max valid line is lineCount - 1)
         url:
           type: string
           format: uri
@@ -553,43 +524,6 @@ components:
           format: uri
           nullable: true
           description: Direct download URL
-    SearchResult:
-      type: object
-      description: Search results when search parameter is provided
-      properties:
-        pattern:
-          type: string
-          description: The search pattern that was matched
-        matches:
-          type: array
-          description: Array of matches found in the file
-          items:
-            type: object
-            properties:
-              line:
-                type: integer
-                description: Line number (0-based) where match was found
-              character:
-                type: integer
-                description: Character position (0-based) where match starts
-              text:
-                type: string
-                description: Context around the match (40 characters before and after)
-        totalMatches:
-          type: integer
-          description: Total number of matches found
-        lineCount:
-          type: integer
-          description: Total number of lines in the file
-        fileInfo:
-          type: object
-          properties:
-            path:
-              type: string
-            sha:
-              type: string
-            size:
-              type: integer
     GitHubCreateUpdateResponse:
       type: object
       properties:

@@ -229,6 +229,16 @@ async function runGitHubTests(target, testRepo, apiKey, runner) {
                 getResponse.body?.content?.includes('Test file created') ||
                 (typeof getResponse.body === 'string' && getResponse.body.includes('Test file created')));
 
+            // Test lineCount metadata (Option A)
+            const content = getResponse.body?.content || '';
+            const expectedLineCount = content.split(/\r?\n/).length;
+            runner.test('GET response includes lineCount', typeof getResponse.body?.lineCount === 'number',
+                `Expected lineCount to be a number, got ${typeof getResponse.body?.lineCount}`);
+            if (typeof getResponse.body?.lineCount === 'number') {
+                runner.test('lineCount is correct', getResponse.body.lineCount === expectedLineCount,
+                    `Expected ${expectedLineCount}, got ${getResponse.body.lineCount}`);
+            }
+
             // Update SHA for cleanup
             if (getResponse.body?.sha && createdFiles.length > 0) {
                 createdFiles[0].sha = getResponse.body.sha;
@@ -420,12 +430,113 @@ async function runGitHubTests(target, testRepo, apiKey, runner) {
             console.log(`    Status: ${invalidPatchResponse.status}`);
             runner.test('PATCH rejects invalid edit range', invalidPatchResponse.status === 400,
                 `Got status ${invalidPatchResponse.status}, expected 400`);
+
+            // Test enhanced error messages (Option D)
+            if (invalidPatchResponse.status === 400) {
+                const details = invalidPatchResponse.body?.details;
+                runner.test('Error includes enhanced details',
+                    typeof details === 'object' && details !== null,
+                    `Expected details object, got ${typeof details}`);
+
+                if (typeof details === 'object' && details !== null) {
+                    runner.test('Error includes actualFileLineCount',
+                        typeof details.actualFileLineCount === 'number',
+                        `Expected number, got ${typeof details.actualFileLineCount}`);
+                    runner.test('Error includes suggestion',
+                        typeof details.suggestion === 'string',
+                        `Expected string, got ${typeof details.suggestion}`);
+                    runner.test('Error includes filePath',
+                        typeof details.filePath === 'string',
+                        `Expected string, got ${typeof details.filePath}`);
+                }
+            }
         } else {
             runner.test('PATCH invalid edit test', false, 'No test file available');
         }
     } catch (e) {
         console.log(`    Error: ${e.message}`);
         runner.test('PATCH invalid edit test', false, e.message);
+    }
+
+    // Test 7: GET with search parameter (Option B)
+    console.log('\n  [TEST 7] GET - Search for text pattern');
+    try {
+        if (createdFiles.length > 0) {
+            // First, create a file with searchable content
+            const searchTestFileName = `test-search-${timestamp}.txt`;
+            const searchTestFilePath = `test-files/${searchTestFileName}`;
+            const searchTestContent = 'Line 1: Hello World\nLine 2: Goodbye World\nLine 3: World peace';
+
+            const createSearchFileResponse = await makeRequest(
+                target,
+                `/api/repos/contents?repo=${encodeURIComponent(testRepo)}&path=${encodeURIComponent(searchTestFilePath)}`,
+                'PUT',
+                {
+                    'Authorization': `Bearer ${apiKey}`,
+                    'Content-Type': 'application/json'
+                },
+                {
+                    content: searchTestContent,
+                    message: `Test: Create file for search test ${searchTestFileName}`
+                }
+            );
+
+            if (createSearchFileResponse.status === 200 || createSearchFileResponse.status === 201) {
+                await sleep(1000); // Give GitHub a moment to process
+
+                // Search for "World"
+                const searchResponse = await makeRequest(
+                    target,
+                    `/api/repos/contents?repo=${encodeURIComponent(testRepo)}&path=${encodeURIComponent(searchTestFilePath)}&search=${encodeURIComponent('World')}`,
+                    'GET',
+                    {
+                        'Authorization': `Bearer ${apiKey}`
+                    }
+                );
+
+                console.log(`    Status: ${searchResponse.status}`);
+                runner.test('Search request succeeds', searchResponse.status === 200,
+                    `Got status ${searchResponse.status}`);
+
+                if (searchResponse.status === 200) {
+                    runner.test('Search response has pattern', searchResponse.body?.pattern === 'World',
+                        `Expected 'World', got '${searchResponse.body?.pattern}'`);
+                    runner.test('Search response has matches array', Array.isArray(searchResponse.body?.matches),
+                        `Expected array, got ${typeof searchResponse.body?.matches}`);
+                    runner.test('Search finds correct number of matches', searchResponse.body?.totalMatches === 3,
+                        `Expected 3 matches, got ${searchResponse.body?.totalMatches}`);
+                    runner.test('Search response includes lineCount', typeof searchResponse.body?.lineCount === 'number',
+                        `Expected number, got ${typeof searchResponse.body?.lineCount}`);
+
+                    if (Array.isArray(searchResponse.body?.matches) && searchResponse.body.matches.length > 0) {
+                        const firstMatch = searchResponse.body.matches[0];
+                        runner.test('Match has line number', typeof firstMatch.line === 'number',
+                            `Expected number, got ${typeof firstMatch.line}`);
+                        runner.test('Match has character position', typeof firstMatch.character === 'number',
+                            `Expected number, got ${typeof firstMatch.character}`);
+                        runner.test('Match has context text', typeof firstMatch.text === 'string',
+                            `Expected string, got ${typeof firstMatch.text}`);
+
+                        // Verify line numbers are correct (0-based)
+                        runner.test('First match is on correct line', firstMatch.line === 0,
+                            `Expected line 0, got ${firstMatch.line}`);
+                    }
+                }
+
+                // Track file for cleanup
+                createdFiles.push({
+                    path: searchTestFilePath,
+                    sha: createSearchFileResponse.body?.content?.sha
+                });
+            } else {
+                runner.test('Search test setup succeeds', false, `Failed to create test file: ${createSearchFileResponse.status}`);
+            }
+        } else {
+            runner.test('Search test', false, 'No test file available');
+        }
+    } catch (e) {
+        console.log(`    Error: ${e.message}`);
+        runner.test('Search request succeeds', false, e.message);
     }
 
     return createdFiles;
